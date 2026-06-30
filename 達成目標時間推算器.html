@@ -36,7 +36,7 @@
             border-radius: 16px;
             box-shadow: 0 10px 25px rgba(0, 0, 0, 0.05);
             width: 100%;
-            max-width: 700px;
+            max-width: 750px;
             padding: 32px;
             box-sizing: border-box;
         }
@@ -78,6 +78,7 @@
             font-weight: 600;
             font-size: 14px;
             color: var(--primary-color);
+            margin-bottom: 6px;
         }
 
         input[type="number"] {
@@ -96,10 +97,15 @@
             border-color: var(--accent-color);
             outline: none;
         }
+        
+        .helper-text {
+            color: #94a3b8;
+            font-size: 12px;
+            margin-top: 4px;
+        }
 
-        /* 範圍滑桿的樣式 */
         .range-container {
-            grid-column: 1 / -1; /* 佔滿整行 */
+            grid-column: 1 / -1;
             background: #f1f5f9;
             padding: 16px;
             border-radius: 10px;
@@ -205,13 +211,12 @@
             text-align: center;
             margin-top: 16px;
         }
-
     </style>
 </head>
 <body>
 
     <div class="calculator-card">
-        <h2>達成目標時間推算器</h2>
+        <h2>達成目標時間推算器 (Coast FIRE)</h2>
 
         <div class="input-section">
             <div class="grid-inputs">
@@ -225,15 +230,21 @@
                     <input type="number" id="initialAmount" value="100" min="0" step="10">
                 </div>
 
-                <div class="input-group" style="grid-column: 1 / -1;">
-                    <label for="monthlyAmount">3. 未來每月定期定額 (千)</label>
+                <div class="input-group">
+                    <label for="monthlyAmount">3. 每月定期定額 (千)</label>
                     <input type="number" id="monthlyAmount" value="10" min="0" step="1">
+                </div>
+
+                <div class="input-group">
+                    <label for="stopYear">4. 幾年後停止投入 (年)</label>
+                    <input type="number" id="stopYear" value="10" min="0" step="1">
+                    <div class="helper-text">填 0 代表不停止，持續扣款到達標</div>
                 </div>
             </div>
 
             <div class="range-container">
                 <div class="input-header">
-                    <label for="rate">4. 預估年化報酬率</label>
+                    <label for="rate">5. 預估年化報酬率</label>
                     <span class="value-display" id="rateDisplay">7.0 %</span>
                 </div>
                 <input type="range" id="rate" min="1" max="15" value="7" step="0.5">
@@ -242,10 +253,10 @@
 
         <div class="result-section">
             <div class="warning-tag" id="overLimitWarning">
-                ⚠️ 依目前設定，達成目標需超過 30 年。<br>圖表已限制顯示至第 30 年的預估結果。
+                ⚠️ 依目前設定，達成目標需超過 40 年或無法達成。<br>圖表已限制顯示至最高 40 年的預估結果。
             </div>
 
-            <div class="result-title">達成目標預估還需要：</div>
+            <div class="result-title">達成目標預估總共需要：</div>
             <div class="result-value" id="timeResult">0 年 0 個月</div>
             
             <div class="breakdown">
@@ -260,21 +271,20 @@
             </div>
         </div>
 
-        <!-- 曲線圖表區塊 -->
         <div class="chart-container">
             <canvas id="growthChart"></canvas>
         </div>
         
         <div class="disclaimer">
-            *註：本試算採用期初投入法（每月一日投入），且將利息即時滾入本金計算。實際投資會有市場波動，本圖表為長期趨勢之數學推演。
+            *註：本試算採用期初投入法，並假設停止投入後資金仍保留於市場內持續依報酬率滾動。
         </div>
     </div>
 
     <script>
-        // 取得 DOM 元素
         const elTargetAmount = document.getElementById('targetAmount');
         const elInitialAmount = document.getElementById('initialAmount');
         const elMonthlyAmount = document.getElementById('monthlyAmount');
+        const elStopYear = document.getElementById('stopYear');
         const elRate = document.getElementById('rate');
         
         const elRateDisplay = document.getElementById('rateDisplay');
@@ -283,46 +293,66 @@
         const elTotalInterest = document.getElementById('totalInterest');
         const elWarning = document.getElementById('overLimitWarning');
 
-        let growthChart = null; // 儲存圖表實例
+        let growthChart = null;
 
-        // 格式化數字為貨幣格式
         const formatMoney = (num) => {
             return Math.round(num).toLocaleString('zh-TW');
         };
 
-        // 繪製或更新圖表
-        function updateChart(displayYears, initial, pmt, annualRate, isCapped) {
+        function updateChart(displayYears, initial, pmt, annualRate, stopYearSetting, isCapped) {
             const labels = [];
-            const assetData = [];
-            const profitData = [];
+            const assetData = []; // 預估總資產
+            const principalData = []; // 累積投入本金的陣列
+            const profitData = []; // 累積獲利(複利)
             
             const monthlyRate = annualRate / 12;
 
-            // 包含第 0 年 (起始點)
+            // 第 0 年 (現在)
             labels.push('現在');
             assetData.push(initial);
             profitData.push(0); 
+            principalData.push(initial);
 
             for (let i = 1; i <= displayYears; i++) {
                 labels.push(`第 ${i} 年`);
                 
                 const monthsPassed = i * 12;
-                const currentPrincipal = initial + (pmt * monthsPassed);
-                
+                let currentPrincipal = 0;
                 let currentTotal = 0;
-                if (annualRate === 0) {
-                    currentTotal = currentPrincipal;
+
+                // 判斷是否還在定期定額期間內
+                if (i <= stopYearSetting || stopYearSetting === Infinity) {
+                    currentPrincipal = initial + (pmt * monthsPassed);
+                    if (annualRate === 0) {
+                        currentTotal = currentPrincipal;
+                    } else {
+                        const pvGrowth = initial * Math.pow(1 + monthlyRate, monthsPassed);
+                        const pmtGrowth = pmt * ((Math.pow(1 + monthlyRate, monthsPassed) - 1) / monthlyRate) * (1 + monthlyRate);
+                        currentTotal = pvGrowth + pmtGrowth;
+                    }
                 } else {
-                    // FV = PV*(1+r)^n + PMT*(1+r)*(((1+r)^n - 1) / r)
-                    const pvGrowth = initial * Math.pow(1 + monthlyRate, monthsPassed);
-                    const pmtGrowth = pmt * ((Math.pow(1 + monthlyRate, monthsPassed) - 1) / monthlyRate) * (1 + monthlyRate);
-                    currentTotal = pvGrowth + pmtGrowth;
+                    // 已經停止定期定額，本金不再增加，只靠市場滾動
+                    const exactStopMonths = stopYearSetting * 12;
+                    currentPrincipal = initial + (pmt * exactStopMonths); 
+
+                    let fvAtStop = 0;
+                    if (annualRate === 0) {
+                        fvAtStop = currentPrincipal;
+                        currentTotal = fvAtStop; 
+                    } else {
+                        const pvGrowth = initial * Math.pow(1 + monthlyRate, exactStopMonths);
+                        const pmtGrowth = pmt * ((Math.pow(1 + monthlyRate, exactStopMonths) - 1) / monthlyRate) * (1 + monthlyRate);
+                        fvAtStop = pvGrowth + pmtGrowth; 
+
+                        const monthsAfterStop = monthsPassed - exactStopMonths;
+                        currentTotal = fvAtStop * Math.pow(1 + monthlyRate, monthsAfterStop); 
+                    }
                 }
 
                 const currentProfit = currentTotal - currentPrincipal;
-
                 assetData.push(Math.round(currentTotal));
                 profitData.push(Math.round(currentProfit));
+                principalData.push(Math.round(currentPrincipal)); // 寫入每年的本金資料
             }
 
             const ctx = document.getElementById('growthChart').getContext('2d');
@@ -331,7 +361,6 @@
                 growthChart.destroy();
             }
 
-            // 選項A：累積獲利 vs 總資產
             growthChart = new Chart(ctx, {
                 type: 'line',
                 data: {
@@ -340,7 +369,7 @@
                         {
                             label: '預估總資產',
                             data: assetData,
-                            borderColor: '#10b981',
+                            borderColor: '#10b981', // 綠色
                             backgroundColor: 'rgba(16, 185, 129, 0.1)',
                             borderWidth: 3,
                             fill: true,
@@ -349,12 +378,23 @@
                             pointHoverRadius: 5
                         },
                         {
-                            label: '累積總獲利 (複利)',
-                            data: profitData,
-                            borderColor: '#3b82f6',
+                            label: '累積投入本金',
+                            data: principalData,
+                            borderColor: '#f59e0b', // 橘黃色
                             backgroundColor: 'transparent',
                             borderWidth: 2,
-                            borderDash: [5, 5], // 虛線區隔
+                            fill: false,
+                            tension: 0.3,
+                            pointRadius: 1,
+                            pointHoverRadius: 5
+                        },
+                        {
+                            label: '累積獲利(複利)',
+                            data: profitData,
+                            borderColor: '#3b82f6', // 藍色
+                            backgroundColor: 'transparent',
+                            borderWidth: 2,
+                            borderDash: [5, 5],
                             fill: false,
                             tension: 0.3,
                             pointRadius: 1,
@@ -398,39 +438,57 @@
             });
         }
 
-        // 主要計算邏輯
         function calculate() {
-            // 將輸入單位（萬、千）轉換回基本單位（元）進行計算
+            // 將單位「萬」與「千」轉換回「元」計算
             const target = parseFloat(elTargetAmount.value) * 10000;
             const initial = (parseFloat(elInitialAmount.value) || 0) * 10000;
             const pmt = (parseFloat(elMonthlyAmount.value) || 0) * 1000;
             const annualRate = parseFloat(elRate.value) / 100;
+            
+            const rawStopYear = parseFloat(elStopYear.value);
+            const stopYearSetting = (isNaN(rawStopYear) || rawStopYear <= 0) ? Infinity : rawStopYear;
+            const stopMonths = stopYearSetting === Infinity ? Infinity : stopYearSetting * 12;
 
             elRateDisplay.textContent = `${(annualRate * 100).toFixed(1)} %`;
 
-            // 防呆處理
             if (isNaN(target) || target <= 0) return;
 
+            let r = annualRate / 12;
             let totalMonths = 0;
-            const r = annualRate / 12;
+            let continuousMonths = 0; 
 
+            // 先計算如果不停止扣款，達標需要多久
             if (target <= initial) {
-                totalMonths = 0;
+                continuousMonths = 0;
             } else if (annualRate === 0) {
-                if (pmt <= 0) totalMonths = Infinity;
-                else totalMonths = (target - initial) / pmt;
+                continuousMonths = pmt > 0 ? (target - initial) / pmt : Infinity;
             } else {
-                // 解財務期初年金方程式反推 n (期數)
-                // factor = PMT * (1+r) / r
-                // (Target + factor) / (PV + factor) = (1+r)^n
                 const factor = pmt * (1 + r) / r;
-                const numerator = target + factor;
-                const denominator = initial + factor;
-                
-                if (denominator <= 0 || numerator <= 0) {
-                    totalMonths = Infinity;
+                const num = target + factor;
+                const den = initial + factor;
+                if (den <= 0 || num <= 0) {
+                    continuousMonths = Infinity;
                 } else {
-                    totalMonths = Math.log(numerator / denominator) / Math.log(1 + r);
+                    continuousMonths = Math.log(num / den) / Math.log(1 + r);
+                }
+            }
+
+            if (continuousMonths <= stopMonths) {
+                // 在計畫停止扣款之前就達標了
+                totalMonths = continuousMonths;
+            } else {
+                // 停止扣款後尚未達標，剩餘缺口靠複利滾動
+                if (annualRate === 0) {
+                    totalMonths = Infinity; 
+                } else {
+                    const fvStop = initial * Math.pow(1+r, stopMonths) + pmt * ((Math.pow(1+r, stopMonths) - 1) / r) * (1+r);
+                    
+                    if (fvStop >= target) {
+                        totalMonths = stopMonths;
+                    } else {
+                        const remainingMonths = Math.log(target / fvStop) / Math.log(1 + r);
+                        totalMonths = stopMonths + remainingMonths;
+                    }
                 }
             }
 
@@ -438,58 +496,63 @@
             let finalPrincipal = 0;
             let finalTotal = target;
             let isCapped = false;
+            
+            // 防呆上限
+            const MAX_YEARS = 40; 
+            const MAX_MONTHS = MAX_YEARS * 12;
 
-            if (totalMonths === Infinity || totalMonths > 360) {
-                // 超過 30 年 (360 個月) 的防呆處理
+            if (totalMonths === Infinity || totalMonths > MAX_MONTHS) {
                 isCapped = true;
-                displayYears = 30;
+                displayYears = MAX_YEARS;
                 elWarning.style.display = 'block';
-                elTimeResult.textContent = '超過 30 年';
+                elTimeResult.textContent = `超過 ${MAX_YEARS} 年`;
                 elTimeResult.style.color = 'var(--warning-color)';
                 
-                // 計算 30 年後的實際數值
-                const maxMonths = 360;
-                finalPrincipal = initial + (pmt * maxMonths);
-                finalTotal = (initial * Math.pow(1 + r, maxMonths)) + (pmt * ((Math.pow(1 + r, maxMonths) - 1) / r) * (1 + r));
+                if (MAX_MONTHS <= stopMonths) {
+                    finalPrincipal = initial + (pmt * MAX_MONTHS);
+                    finalTotal = (initial * Math.pow(1 + r, MAX_MONTHS)) + (pmt * ((Math.pow(1 + r, MAX_MONTHS) - 1) / r) * (1 + r));
+                } else {
+                    finalPrincipal = initial + (pmt * stopMonths);
+                    const fvStop = (initial * Math.pow(1 + r, stopMonths)) + (pmt * ((Math.pow(1 + r, stopMonths) - 1) / r) * (1 + r));
+                    finalTotal = fvStop * Math.pow(1 + r, MAX_MONTHS - stopMonths);
+                }
             } else {
-                // 正常達標
                 isCapped = false;
                 elWarning.style.display = 'none';
                 elTimeResult.style.color = 'var(--success-color)';
                 
                 const calcYears = Math.floor(totalMonths / 12);
-                const calcMonths = Math.ceil(totalMonths % 12); // 無條件進位到整數月
+                const calcMonths = Math.ceil(totalMonths % 12); 
                 
-                // 處理進位到 12 個月的狀況
                 if (calcMonths === 12) {
                     elTimeResult.textContent = `${calcYears + 1} 年 0 個月`;
                     displayYears = calcYears + 1;
                 } else {
                     elTimeResult.textContent = `${calcYears} 年 ${calcMonths} 個月`;
-                    displayYears = Math.ceil(totalMonths / 12); // 圖表 X 軸取完整年份
+                    displayYears = Math.ceil(totalMonths / 12); 
                 }
                 
-                finalPrincipal = initial + (pmt * totalMonths);
-                // finalTotal 直接使用 Target，因為這是達標的瞬間
+                if (totalMonths <= stopMonths) {
+                    finalPrincipal = initial + (pmt * totalMonths);
+                } else {
+                    finalPrincipal = initial + (pmt * stopMonths);
+                }
             }
 
-            // 更新數字結果
             const finalProfit = finalTotal - finalPrincipal;
             elTotalPrincipal.textContent = formatMoney(finalPrincipal) + ' 元';
             elTotalInterest.textContent = formatMoney(finalProfit) + ' 元';
 
-            // 更新圖表 (最少畫 1 年，最多畫 30 年)
-            displayYears = Math.max(1, Math.min(displayYears, 30));
-            updateChart(displayYears, initial, pmt, annualRate, isCapped);
+            displayYears = Math.max(1, Math.min(displayYears, MAX_YEARS));
+            updateChart(displayYears, initial, pmt, annualRate, stopYearSetting, isCapped);
         }
 
-        // 綁定事件監聽器
         elTargetAmount.addEventListener('input', calculate);
         elInitialAmount.addEventListener('input', calculate);
         elMonthlyAmount.addEventListener('input', calculate);
+        elStopYear.addEventListener('input', calculate);
         elRate.addEventListener('input', calculate);
 
-        // 初始計算一次
         calculate();
     </script>
 </body>
